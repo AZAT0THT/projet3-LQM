@@ -1,0 +1,45 @@
+name: Validation du Rickroll
+
+on:
+  workflow_dispatch:
+    inputs:
+      provoquer_echec:
+        description: Faire échouer volontairement le test
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Provoquer un échec dans le test
+        if: inputs.provoquer_echec
+        shell: python
+        run: |
+          from pathlib import Path
+
+          fichier = Path("tika-core/src/test/java/org/apache/tika/TikaDetectionTest.java")
+          code = fichier.read_text(encoding="utf-8")
+          assertion = 'assertEquals("application/pdf", tika.detect("x.pdf"));'
+          assert assertion in code, "Assertion de validation introuvable"
+          code = code.replace(assertion, 'assertEquals("application/rickroll", tika.detect("x.pdf"));', 1)
+          fichier.write_text(code, encoding="utf-8")
+
+      - name: Exécuter le test Tika
+        run: mvn -B -pl tika-core -am clean test -Dtest=TikaDetectionTest -Dsurefire.failIfNoSpecifiedTests=false
+
+      - name: Rickroll si un test échoue
+        if: failure()
+        uses: ./.github/actions/rickroll
