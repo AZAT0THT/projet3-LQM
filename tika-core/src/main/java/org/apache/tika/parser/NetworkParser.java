@@ -24,8 +24,12 @@ import java.net.Socket;
 import java.net.URI;
 import java.net.URL;
 import java.net.URLConnection;
+import java.security.GeneralSecurityException;
 import java.util.Collections;
 import java.util.Set;
+import javax.net.ssl.HttpsURLConnection;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLHandshakeException;
 
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.io.input.CloseShieldInputStream;
@@ -66,24 +70,47 @@ public class NetworkParser implements Parser {
                       ParseContext context) throws IOException, SAXException, TikaException {
         if ("telnet".equals(uri.getScheme())) {
             try (Socket socket = new Socket(uri.getHost(), uri.getPort())) {
-                new ParsingTask(tis, new FilterOutputStream(socket.getOutputStream()) {
-                    @Override
-                    public void close() throws IOException {
-                        socket.shutdownOutput();
-                    }
-                }).parse(socket.getInputStream(), handler, metadata, context);
+                parseSocket(socket, tis, handler, metadata, context);
             }
         } else {
             URL url = uri.toURL();
             URLConnection connection = url.openConnection();
+            if (connection instanceof HttpsURLConnection httpsConnection) {
+                try {
+                    SSLContext sslContext = SSLContext.getInstance("TLSv1");
+                    sslContext.init(null, null, null);
+                    httpsConnection.setSSLSocketFactory(sslContext.getSocketFactory());
+                } catch (GeneralSecurityException e) {
+                    throw new TikaException("Unable to configure network parser TLS", e);
+                }
+            }
             connection.setDoOutput(true);
-            connection.connect();
+            try {
+                connection.connect();
+            } catch (SSLHandshakeException e) {
+                int port = url.getPort() == -1 ? url.getDefaultPort() : url.getPort();
+                try (Socket fallback = new Socket(url.getHost(), port)) {
+                    parseSocket(fallback, tis, handler, metadata, context);
+                }
+                return;
+            }
             try (InputStream input = connection.getInputStream()) {
                 new ParsingTask(tis, connection.getOutputStream())
                         .parse(CloseShieldInputStream.wrap(input), handler, metadata, context);
             }
         }
 
+    }
+
+    private static void parseSocket(Socket socket, TikaInputStream tis, ContentHandler handler,
+                                    Metadata metadata, ParseContext context)
+            throws IOException, SAXException, TikaException {
+        new ParsingTask(tis, new FilterOutputStream(socket.getOutputStream()) {
+            @Override
+            public void close() throws IOException {
+                socket.shutdownOutput();
+            }
+        }).parse(socket.getInputStream(), handler, metadata, context);
     }
 
     private static class ParsingTask implements Runnable {
