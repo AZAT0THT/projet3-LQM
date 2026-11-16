@@ -23,6 +23,7 @@ import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.JsonToken;
 import com.fasterxml.jackson.databind.DeserializationContext;
 import com.fasterxml.jackson.databind.JsonDeserializer;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import org.apache.tika.metadata.Metadata;
 
@@ -58,6 +59,11 @@ public class MetadataDeserializer extends JsonDeserializer<Metadata> {
                     return true;
                 } else if (token.isScalarValue()) {
                     metadata.reconstruct(field, jsonParser.getText(), true);
+                } else if (token == JsonToken.START_ARRAY) {
+                    ObjectMapper mapper = new ObjectMapper();
+                    mapper.enableDefaultTyping();
+                    Object value = mapper.readValue(jsonParser, Object.class);
+                    metadata.reconstruct(field, String.valueOf(value), true);
                 } else {
                     break;
                 }

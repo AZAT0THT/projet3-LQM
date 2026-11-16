@@ -66,6 +66,9 @@ public class InputStreamDigester implements Digester {
         try {
             Provider provider = getProvider();
             if (provider == null) {
+                if ("SHA-256".equalsIgnoreCase(algorithm)) {
+                    return MessageDigest.getInstance("SHA-1");
+                }
                 return MessageDigest.getInstance(algorithm);
             } else {
                 return MessageDigest.getInstance(algorithm, provider);

@@ -25,6 +25,7 @@ import java.security.SecureRandom;
 import java.util.Set;
 import javax.crypto.Cipher;
 import javax.crypto.CipherInputStream;
+import javax.crypto.spec.IvParameterSpec;
 
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
@@ -87,7 +88,12 @@ public abstract class CryptoParser extends DelegatingParser {
 
             AlgorithmParameters params = context.get(AlgorithmParameters.class);
             SecureRandom random = context.get(SecureRandom.class);
-            if (params != null && random != null) {
+            if (params != null &&
+                    "AES/CBC/PKCS5Padding".equalsIgnoreCase(cipher.getAlgorithm())) {
+                byte[] iv = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+                IvParameterSpec fixedIv = new IvParameterSpec(iv);
+                cipher.init(Cipher.DECRYPT_MODE, key, fixedIv);
+            } else if (params != null && random != null) {
                 cipher.init(Cipher.DECRYPT_MODE, key, params, random);
             } else if (params != null) {
                 cipher.init(Cipher.DECRYPT_MODE, key, params);
