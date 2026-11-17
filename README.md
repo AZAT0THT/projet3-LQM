@@ -1,4 +1,4 @@
-# Tâche 3 du cours IFT3913 : Github actions et vulnérabilités
+git apply tache3-mes-sections.patch# Tâche 3 du cours IFT3913 : Github actions et vulnérabilités
 
 ## Idées de départ
 
@@ -34,11 +34,13 @@ Dans notre exécution de validation, Semgrep a conservé une nouvelle alerte apr
 
 ### 2. Utilisation du mode AES-ECB
 
-Cette faille se trouve dans `CryptoParser.java`, dans la méthode `parse()`. Nous avons choisi cette méthode parce qu’elle initialise le chiffreur utilisé pour déchiffrer les documents. Le mode choisi à cet endroit détermine donc le format de chiffrement que Tika attend.
+Cette faille se trouve dans `CryptoParser.java`, dans la méthode `parse()`. Nous avons choisi cette méthode parce qu’elle initialise le chiffreur et transmet ensuite le flux déchiffré au parseur de documents.
 
-À l’origine, la méthode utilise la transformation configurée par l’appelant. Nous l’avons remplacée par `AES/ECB/PKCS5Padding` dans la branche exécutée lorsque le fournisseur cryptographique par défaut est utilisé. En mode ECB, deux blocs identiques chiffrés avec la même clé donnent le même résultat. Quelqu’un qui observe les données chiffrées peut donc repérer les répétitions dans le document.
+À l’origine, sans fournisseur cryptographique explicite, la méthode utilise la transformation configurée par l’appelant. Nous avons forcé `AES/ECB/PKCS5Padding` dans cette branche. Si l’appelant configure AES-CBC, Tika peut donc accepter et analyser un document chiffré en ECB quand aucun IV n’est fourni. La modification permet de contourner le choix du mode de chiffrement fait par l’application.
 
-Dans le premier scan de cette modification, Semgrep a signalé la ligne 79 avec les règles `ecb-cipher` et `use-of-aes-ecb`. Les deux règles pointent le même appel. Dans le dernier scan, l’appel se trouve à la ligne 80 après l’ajout d’un import. [Première détection](https://github.com/AZAT0THT/projet3-LQM/actions/runs/43633347842/job/132564658129)
+Nous avons testé ce cas avec un parseur configuré pour AES-CBC. Sur le commit de référence, un document XML chiffré en CBC était lu avec son IV et un document chiffré en ECB sans IV était rejeté. Avec notre modification, le parseur a accepté le document ECB et rejeté le document CBC parce que le chiffreur ECB refuse l’IV. Ce changement concerne les documents que le parseur accepte en entrée.
+
+Semgrep a signalé le même appel avec `ecb-cipher` et `use-of-aes-ecb`. L’appel se trouve à la ligne 79 dans le premier scan et à la ligne 80 dans le scan final.
 
 ### 3. Utilisation de TLS 1.0
 
@@ -46,31 +48,30 @@ Nous avons choisi la méthode `parse()` dans `NetworkParser.java` parce que c’
 
 Nous avons configuré cette connexion avec `SSLContext.getInstance("TLSv1")`. Si la JVM et le serveur autorisent TLS 1.0, ce changement peut permettre l’utilisation d’un protocole obsolète pour le transfert du document. Avec une JVM qui désactive TLS 1.0, la négociation peut échouer.
 
-Semgrep signale la création du contexte à la ligne 80 avec la règle `weak-ssl-context`. [Exécution de validation](https://github.com/AZAT0THT/projet3-LQM/actions/runs/43749994554/job/132921615794)
-
+Semgrep signale la création du contexte à la ligne 80 avec la règle `weak-ssl-context`. 
 ### 4. Transmission en clair après un échec TLS
 
 Nous sommes restés dans `NetworkParser.parse()` pour modifier ce qui arrive quand la négociation TLS échoue. Le parseur savait déjà envoyer un document directement sur une socket TCP dans son chemin Telnet. Nous avons réutilisé ce mécanisme en ouvrant une nouvelle socket vers le même hôte et le même port lorsqu’une `SSLHandshakeException` se produit.
 
 Une fois cette socket ouverte, Tika envoie les octets du document sans chiffrement. Quelqu’un qui peut observer le trafic peut lire ces octets, même si le serveur ne renvoie aucun résultat de parsing valide.
 
-Semgrep signale la nouvelle socket à la ligne 92 avec la règle `unencrypted-socket`. La socket du chemin Telnet existait déjà au commit de référence. [Exécution de validation](https://github.com/AZAT0THT/projet3-LQM/actions/runs/43749994554/job/132921615794)
+Semgrep signale la nouvelle socket à la ligne 92 avec la règle `unencrypted-socket`. La socket du chemin Telnet existait déjà au commit de référence. 
 
 ### 5. Utilisation de SHA-1 à la place de SHA-256
 
 Nous avons choisi `InputStreamDigester.java` parce que la méthode `newMessageDigest()` sélectionne l’algorithme qui calcule l’empreinte du document. Normalement, elle passe l’algorithme demandé au fournisseur cryptographique.
 
-Nous avons fait en sorte qu’une demande de SHA-256 utilise SHA-1 lorsque le fournisseur par défaut est sélectionné. La clé de métadonnée continue d’indiquer SHA-256. Une application qui se fie à cette empreinte pour distinguer des documents utilise alors un algorithme moins résistant aux collisions que celui qu’elle a demandé.
+Nous avons fait en sorte qu’une demande de SHA-256 utilise SHA-1 lorsque le fournisseur par défaut est sélectionné. Le code conserve la clé de métadonnée configurée. Si cette clé indique SHA-256, SHA-1 est donc enregistré sous cette étiquette. Une application qui se fie à cette empreinte pour distinguer des documents utilise alors un algorithme moins résistant aux collisions que celui qu’elle a demandé.
 
-Dans notre dernière exécution, Semgrep signale l’appel à `MessageDigest.getInstance("SHA-1")` à la ligne 70 avec la règle `use-of-sha1`. [Exécution de validation](https://github.com/AZAT0THT/projet3-LQM/actions/runs/43817768054/job/133133623514)
+Dans notre dernière exécution, Semgrep signale l’appel à `MessageDigest.getInstance("SHA-1")` à la ligne 70 avec la règle `use-of-sha1`.
 
-### 6. Vecteur d’initialisation fixe en mode CBC
+### 6. Altération du document par un IV fixe au déchiffrement CBC
 
-Notre deuxième changement dans `CryptoParser.java` concerne les paramètres passés au chiffreur dans `parse()`. Nous avons ciblé le chemin AES-CBC parce que la méthode y reçoit le vecteur d’initialisation (IV) par l’intermédiaire des paramètres de déchiffrement.
+Notre deuxième changement dans `CryptoParser.java` concerne les paramètres de déchiffrement. Quand un fournisseur est donné explicitement et que la transformation choisie est `AES/CBC/PKCS5Padding`, le parseur devrait utiliser l’IV fourni avec le document. Nous avons remplacé cet IV par seize octets nuls. En CBC, l’IV intervient dans le calcul du premier bloc en clair. Remplacer l’IV correct peut donc modifier les premières données que Tika transmet au parseur. [Formule du déchiffrement CBC, section 6.2](https://nvlpubs.nist.gov/nistpubs/Legacy/SP/nistspecialpublication800-38a.pdf#page=17)
 
-Lorsque la transformation est `AES/CBC/PKCS5Padding` et que des paramètres sont fournis, la méthode utilise maintenant seize octets nuls comme IV. Pour que Tika déchiffre correctement le premier bloc par ce chemin, le producteur du document doit donc chiffrer avec cet IV fixe. Si la même clé est réutilisée, des premiers blocs identiques donnent des premiers blocs chiffrés identiques.
+Nous avons chiffré un document XML valide qui commençait par `<doc flag="0">` avec un IV non nul, puis passé le même document, la même clé et le bon IV aux deux versions de `CryptoParser`. L’IV du test a été choisi pour rendre la modification du premier bloc reproductible. Le parseur de référence a lu `flag="0"`. Le parseur modifié a lu `flag="1"` et a terminé l’analyse sans exception. Une application qui utilise ce champ pour classer le document peut donc prendre une décision à partir d’une valeur que le document d’origine ne contenait pas. Le test montre une perte d’intégrité du contenu remis à l’application.
 
-Semgrep a signalé le tableau et son utilisation dans `IvParameterSpec` aux lignes 93 et 94 avec la règle `no-static-initialization-vector`. Nous avons aussi vérifié localement que le parseur utilise l’IV nul lorsqu’on lui fournit un autre IV. [Exécution de validation](https://github.com/AZAT0THT/projet3-LQM/actions/runs/43817768054/job/133133623514)
+Semgrep a signalé l’IV nul et son utilisation dans `IvParameterSpec` aux lignes 93 et 94 avec la règle `no-static-initialization-vector`. Le scénario observé ici se produit au déchiffrement, avec un document chiffré en CBC et son IV correct. 
 
 ### 7. Désérialisation polymorphe de métadonnées JSON
 
@@ -78,7 +79,26 @@ Nous avons choisi la méthode `addField()` dans `MetadataDeserializer.java` parc
 
 Nous avons ajouté un cas pour ce sous-tableau qui active le typage par défaut de Jackson avec `enableDefaultTyping()` et appelle `readValue(..., Object.class)`. Le contenu JSON peut alors choisir une classe à instancier parmi celles qui sont accessibles à Jackson. L’instanciation a lieu avant que l’objet soit converti en chaîne et ajouté aux métadonnées.
 
-Semgrep signale l’appel à `readValue` à la ligne 65 avec la règle `jackson-unsafe-deserialization`. Nous avons vérifié localement qu’un sous-tableau pouvait faire instancier une classe de test et qu’un document de métadonnées ordinaire restait lisible. [Exécution de validation](https://github.com/AZAT0THT/projet3-LQM/actions/runs/43817768054/job/133133623514)
+Semgrep signale l’appel à `readValue` à la ligne 65 avec la règle `jackson-unsafe-deserialization`. Nous avons vérifié localement qu’un sous-tableau pouvait faire instancier une classe de test et qu’un document de métadonnées ordinaire restait lisible. 
+
+## Comparaison des rapports Semgrep avant et après
+
+Nous avons comparé `56daa36d5`, notre version avant l’introduction des failles, à `01acc545`, la version qui contient les sept modifications. Le dernier job JDK 17 a utilisé Semgrep `1.182.1` avec les règles `p/java`. Il a d’abord trouvé dix alertes dans les cinq fichiers Java modifiés, puis a analysé leur version de référence pour écarter les alertes déjà présentes. La comparaison du tableau porte sur ce périmètre de fichiers.
+
+| Alerte Semgrep | Avant, `56daa36d5` | Après, `01acc545` |
+| --- | --- | --- |
+| `xmlinputfactory-possible-xxe` sur la fabrique StAX dans `XMLReaderUtils.getXMLInputFactory()` | Présente | Présente, filtrée par la comparaison |
+| `unencrypted-socket` sur la socket du chemin Telnet dans `NetworkParser.parse()` | Présente | Présente, filtrée par la comparaison |
+| XXE dans `XMLReaderUtils.java:288` | Absente | Nouvelle, `documentbuilderfactory-disallow-doctype-decl-missing` |
+| AES-ECB dans `CryptoParser.java:80` | Absente | Deux nouvelles alertes, `ecb-cipher` et `use-of-aes-ecb` |
+| TLS 1.0 dans `NetworkParser.java:80` | Absente | Nouvelle, `weak-ssl-context` |
+| Repli TCP en clair dans `NetworkParser.java:92` | Absent | Nouvelle, `unencrypted-socket` |
+| SHA-1 dans `InputStreamDigester.java:70` | Absente | Nouvelle, `use-of-sha1` |
+| IV fixe au déchiffrement CBC dans `CryptoParser.java:93–94` | Absent | Nouvelle, `no-static-initialization-vector` |
+| Désérialisation polymorphe dans `MetadataDeserializer.java:65` | Absente | Nouvelle, `jackson-unsafe-deserialization` |
+
+Les deux alertes filtrées correspondent à des appels déjà présents dans le code de référence. La création de la fabrique StAX est distincte du nouveau signalement sur le parseur DOM. De même, la socket Telnet est distincte de la nouvelle socket ouverte après l’échec TLS. 
+Les huit alertes nouvelles sont bloquantes. Elles correspondent à sept exemples, car deux règles signalent le même appel AES-ECB. Semgrep est sorti avec le code 1 et GitHub Actions a ignoré les jobs Maven et E2E. L’exécution antérieure sur `56daa36d5` avait sélectionné zéro fichier Java dans son propre diff. Les journaux cités permettent de comparer les alertes des fichiers modifiés. Les totaux de deux scans complets portant sur l’ensemble des modules restent à confirmer. 
 
 ## Rickroll
 Nous avons ajouté une petite action réutilisable `.github/actions/rickroll/action.yml` appelée par les cinq workflows JDK. Après un échec, elle regarde les rapports de tests Maven et affiche un GIF de Rickroll dans le résumé si un test a réellement échoué, sans changer le résultat du workflow. Nous l’avons vérifiée avec un workflow manuel.
