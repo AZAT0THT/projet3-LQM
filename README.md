@@ -1,4 +1,4 @@
-git apply tache3-mes-sections.patch# Tâche 3 du cours IFT3913 : Github actions et vulnérabilités
+Tâche 3 du cours IFT3913 : Github actions et vulnérabilités
 
 ## Idées de départ
 
